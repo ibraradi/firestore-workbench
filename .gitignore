@@ -14,3 +14,11 @@ Thumbs.db
 # Local capture/scratch artifacts
 *.log
 captures/
+
+# Java / Burp extension build output (source is committed; artifacts aren't)
+burp-ext/build/
+burp-ext/out/
+burp-ext/libs/
+burp-ext/.gradle/
+*.class
+*.jar

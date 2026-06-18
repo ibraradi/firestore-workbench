@@ -9,11 +9,13 @@ import com.google.gson.JsonNull;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 import com.google.gson.JsonPrimitive;
-import com.sun.net.httpserver.HttpExchange;
-import com.sun.net.httpserver.HttpServer;
 
-import java.io.IOException;
+import java.io.ByteArrayOutputStream;
+import java.io.InputStream;
+import java.io.OutputStream;
 import java.net.InetSocketAddress;
+import java.net.ServerSocket;
+import java.net.Socket;
 import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
 import java.util.Base64;
@@ -23,20 +25,20 @@ import java.util.Map;
  * Firestore Workbench — Burp extension.
  *
  * Listens for capture events from firestore_agent.js (the Frida agent) on a local
- * HTTP endpoint, builds the equivalent Firestore REST request (with the captured
- * Bearer token), and drops it into Burp Repeater. No separate GUI, no proxy
- * plumbing — Repeater is the interface.
+ * socket, builds the equivalent Firestore REST request (with the captured Bearer
+ * token), and drops it into Burp Repeater. No separate GUI, no proxy plumbing.
  *
- * Point the agent's WB_HOST/WB_PORT at this machine and the port below.
+ * Uses a plain ServerSocket (not com.sun.net.httpserver, which Burp's extension
+ * classloader doesn't expose).
  */
 public class FirestoreWorkbenchExtension implements BurpExtension {
 
     private static final int PORT = 8799;
-    private static final String CAPTURE_PATH = "/api/capture";
     private static final String FS = "https://firestore.googleapis.com/v1/projects/%s/databases/(default)/documents/%s";
 
     private MontoyaApi api;
-    private HttpServer server;
+    private ServerSocket serverSocket;
+    private volatile boolean running = true;
 
     @Override
     public void initialize(MontoyaApi api) {
@@ -44,40 +46,84 @@ public class FirestoreWorkbenchExtension implements BurpExtension {
         api.extension().setName("Firestore Workbench");
 
         try {
-            server = HttpServer.create(new InetSocketAddress("0.0.0.0", PORT), 0);
-            server.createContext(CAPTURE_PATH, this::handleCapture);
-            server.setExecutor(null);
-            server.start();
-            api.logging().logToOutput("Firestore Workbench: listening on http://0.0.0.0:" + PORT + CAPTURE_PATH);
+            serverSocket = new ServerSocket();
+            serverSocket.setReuseAddress(true);
+            serverSocket.bind(new InetSocketAddress("0.0.0.0", PORT));
+            Thread t = new Thread(this::acceptLoop, "fs-workbench-listener");
+            t.setDaemon(true);
+            t.start();
+            api.logging().logToOutput("Firestore Workbench: listening on http://0.0.0.0:" + PORT + "/api/capture");
             api.logging().logToOutput("Point firestore_agent.js WB_HOST/WB_PORT here; captures land in Repeater.");
-        } catch (IOException e) {
+        } catch (Exception e) {
             api.logging().logToError("Failed to start capture listener on port " + PORT + ": " + e);
         }
 
         api.extension().registerUnloadingHandler(() -> {
-            if (server != null) server.stop(0);
+            running = false;
+            try { if (serverSocket != null) serverSocket.close(); } catch (Exception ignored) {}
         });
     }
 
-    private void handleCapture(HttpExchange ex) throws IOException {
-        try {
-            if (!"POST".equalsIgnoreCase(ex.getRequestMethod())) {
-                ex.sendResponseHeaders(405, -1);
-                ex.close();
-                return;
-            }
-            String body = new String(ex.getRequestBody().readAllBytes(), StandardCharsets.UTF_8);
+    private void acceptLoop() {
+        while (running) {
             try {
-                process(JsonParser.parseString(body).getAsJsonObject());
+                Socket sock = serverSocket.accept();
+                handle(sock);
             } catch (Exception e) {
-                api.logging().logToError("capture parse/process error: " + e);
+                if (running) api.logging().logToError("accept: " + e);
             }
-            byte[] ok = "{\"ok\":true}".getBytes(StandardCharsets.UTF_8);
-            ex.getResponseHeaders().add("Content-Type", "application/json");
-            ex.sendResponseHeaders(200, ok.length);
-            ex.getResponseBody().write(ok);
+        }
+    }
+
+    /** Minimal HTTP/1.1 read: headers until CRLFCRLF, then Content-Length bytes; reply 200. */
+    private void handle(Socket sock) {
+        try {
+            sock.setSoTimeout(5000);
+            InputStream in = sock.getInputStream();
+            OutputStream out = sock.getOutputStream();
+
+            ByteArrayOutputStream hbuf = new ByteArrayOutputStream();
+            int b;
+            while ((b = in.read()) != -1) {
+                hbuf.write(b);
+                byte[] a = hbuf.toByteArray();
+                int n = a.length;
+                if (n >= 4 && a[n - 4] == '\r' && a[n - 3] == '\n' && a[n - 2] == '\r' && a[n - 1] == '\n') break;
+                if (n > 65536) break;
+            }
+            String headers = hbuf.toString("ISO-8859-1");
+
+            int contentLength = 0;
+            for (String line : headers.split("\r\n")) {
+                int idx = line.indexOf(':');
+                if (idx > 0 && line.substring(0, idx).trim().equalsIgnoreCase("Content-Length")) {
+                    try { contentLength = Integer.parseInt(line.substring(idx + 1).trim()); } catch (Exception ignored) {}
+                }
+            }
+
+            byte[] body = new byte[Math.max(0, contentLength)];
+            int read = 0;
+            while (read < contentLength) {
+                int r = in.read(body, read, contentLength - read);
+                if (r < 0) break;
+                read += r;
+            }
+
+            if (read > 0) {
+                try { process(JsonParser.parseString(new String(body, 0, read, StandardCharsets.UTF_8)).getAsJsonObject()); }
+                catch (Exception e) { api.logging().logToError("capture parse/process error: " + e); }
+            }
+
+            byte[] resp = "{\"ok\":true}".getBytes(StandardCharsets.UTF_8);
+            String head = "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: "
+                    + resp.length + "\r\nConnection: close\r\n\r\n";
+            out.write(head.getBytes(StandardCharsets.ISO_8859_1));
+            out.write(resp);
+            out.flush();
+        } catch (Exception e) {
+            if (running) api.logging().logToError("handle: " + e);
         } finally {
-            ex.close();
+            try { sock.close(); } catch (Exception ignored) {}
         }
     }
 

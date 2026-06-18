@@ -72,6 +72,13 @@ python3 firestore_workbench.py --proxy http://127.0.0.1:8080
 
 Once a capture with a token arrives, the GUI **auto-adopts the token** and **auto-fills the Project ID** (read from the token's `aud` claim) — so for a bearer-token app you don't type the project or authenticate at all. Apps that authenticate Firestore via **App Check** (device-attested) won't yield a replayable token; set the Project ID manually and replays will be unauthenticated.
 
+## Burp extension (alternative front-end)
+
+Prefer to live in Burp? `burp-ext/` is a Montoya extension that takes the same agent
+feed but sends each capture **through Burp's proxy into Proxy → HTTP history** (no Python
+GUI) — review there and send what you want to Repeater. See
+[burp-ext/README.md](burp-ext/README.md).
+
 ## How the agent works (and why)
 
 | Problem | Approach |

@@ -44,6 +44,9 @@ public class FirestoreWorkbenchExtension implements BurpExtension {
     private static final String PROXY_HOST = "127.0.0.1";
     private static final int PROXY_PORT = 8080;          // Burp's proxy listener
     private static final String FS_HOST = "firestore.googleapis.com";
+    // Fallback project id for apps with no bearer token (e.g. App Check) where it can't be
+    // derived from the token's aud. Leave "" to skip such captures.
+    private static final String DEFAULT_PROJECT = "";
 
     private MontoyaApi api;
     private ServerSocket serverSocket;
@@ -132,6 +135,7 @@ public class FirestoreWorkbenchExtension implements BurpExtension {
         String token = str(c, "token", null);
         String project = str(c, "project", null);
         if (project == null && token != null) project = projectFromJwt(token);
+        if (project == null && !DEFAULT_PROJECT.isEmpty()) project = DEFAULT_PROJECT;
         if (project == null) {
             api.logging().logToError("no project id (and none derivable from token); skipping " + str(c, "path", ""));
             return;

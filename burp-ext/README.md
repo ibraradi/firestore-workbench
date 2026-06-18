@@ -18,6 +18,7 @@ Defaults at the top of `FirestoreWorkbenchExtension.java` (change and rebuild if
 | `LISTEN_PORT` | `8799` | where the Frida agent posts captures |
 | `PROXY_HOST` | `127.0.0.1` | Burp's proxy listener host (placeholder — change only if Burp runs elsewhere) |
 | `PROXY_PORT` | `8080` | Burp's proxy listener port |
+| `DEFAULT_PROJECT` | `""` | fallback project id when there's no token to derive it from (e.g. App Check apps); leave empty to skip tokenless captures |
 
 ## Build
 
